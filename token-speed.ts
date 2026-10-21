@@ -157,6 +157,15 @@ interface SpeedState {
 	requestSentAt?: number;
 	firstTokenAt?: number;
 	samples: SpeedSample[];
+	/**
+	 * ASCII-equivalent content characters seen so far, and the instant of the
+	 * last *content* growth. Used to end the decode window at the last token the
+	 * model actually produced: a usage-only update (pi emits one on
+	 * `thinking_end` / `text_end`) and the settle delay before `message_end`
+	 * carry no content but would otherwise stretch the denominator.
+	 */
+	lastContentChars?: number;
+	lastContentAt?: number;
 }
 
 interface LiveSpeed {
@@ -263,25 +272,51 @@ function asAssistantMessage(message: unknown): AssistantMessage | undefined {
 		: undefined;
 }
 
-function estimateOutputTokens(message: AssistantMessage): number {
+/**
+ * Non-ASCII (CJK / full-width) characters are far denser in tokens than ASCII.
+ * Measured against DeepSeek-compatible gateways: Chinese prose runs ~1.43
+ * chars/token while English and code run ~4, so counting raw characters and
+ * dividing by 4 under-reports Chinese output by ~2.8x. That bias is invisible
+ * to an ASCII-only corpus, which is why every `chars/4` estimator reports
+ * Chinese streams at a third of their real rate.
+ */
+const WIDE_CHAR_WEIGHT = 2.8;
+
+/** ASCII counts 1, non-ASCII counts WIDE_CHAR_WEIGHT. */
+function equivalentCharacters(text: string): number {
+	let ascii = 0;
+	let wide = 0;
+	for (const ch of text) {
+		if (ch.codePointAt(0)! < 128) ascii++;
+		else wide++;
+	}
+	return ascii + wide * WIDE_CHAR_WEIGHT;
+}
+
+/** ASCII-equivalent character count of a message's text, thinking and tool args. */
+function contentCharacters(message: AssistantMessage): number {
 	let characters = 0;
 
 	for (const part of message.content) {
 		switch (part.type) {
 			case "text":
-				characters += part.text.length;
+				characters += equivalentCharacters(part.text);
 				break;
 			case "thinking":
-				characters += part.thinking.length;
+				characters += equivalentCharacters(part.thinking);
 				break;
 			case "toolCall":
-				characters += part.name.length;
-				characters += JSON.stringify(part.arguments)?.length ?? 0;
+				characters += equivalentCharacters(part.name);
+				characters += equivalentCharacters(JSON.stringify(part.arguments) ?? "");
 				break;
 		}
 	}
 
-	return Math.ceil(characters / 4);
+	return characters;
+}
+
+function estimateOutputTokens(message: AssistantMessage): number {
+	return Math.ceil(contentCharacters(message) / 4);
 }
 
 function getOutputTokens(message: AssistantMessage): number {
@@ -784,6 +819,16 @@ export default function (pi: ExtensionAPI) {
 		// update — so this sample carries the whole (possibly batched) first chunk,
 		// and the naive "tokens since start" is what used to spike here.
 		const outputTokens = getOutputTokens(message);
+		// Content growth — not token-count growth — marks real decoding progress.
+		// A usage-only arrival raises the token count while content is unchanged;
+		// letting it move the anchor would hand the tail delay to the denominator.
+		const contentChars = contentCharacters(message);
+		const grew =
+			activeResponse.lastContentChars === undefined || contentChars > activeResponse.lastContentChars;
+		if (grew) {
+			activeResponse.lastContentChars = contentChars;
+			activeResponse.lastContentAt = now - activeResponse.startedAt;
+		}
 		pushSample(
 			activeResponse.samples,
 			{ at: now - activeResponse.startedAt, tokens: outputTokens },
@@ -849,9 +894,14 @@ export default function (pi: ExtensionAPI) {
 		}
 		const streamedTokens =
 			firstArrivalTokens !== undefined ? outputTokens - firstArrivalTokens : 0;
+		// Decode ends at the last content growth, not at message_end: a usage-only
+		// update and the provider's settle delay (measured 96ms here, 546ms on a
+		// gateway that reports usage late) would otherwise inflate the denominator
+		// and under-report the rate by 5-30%.
+		const decodeEndAt = activeResponse.lastContentAt ?? nowMs - activeResponse.startedAt;
 		const streamedMs =
 			activeResponse.firstTokenAt !== undefined
-				? Math.max(nowMs - activeResponse.firstTokenAt, 0)
+				? Math.max(activeResponse.startedAt + decodeEndAt - activeResponse.firstTokenAt, 0)
 				: 0;
 		const average =
 			streamedMs > 0 && streamedTokens > 0 ? streamedTokens / (streamedMs / 1000) : undefined;

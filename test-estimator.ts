@@ -101,7 +101,8 @@ const clean = (n: number) => Array.from({ length: n }, (_, i) => [50, (i + 1) * 
 // [regression] 早期窗口被两个相邻肥 chunk 污染：既有实现显示 5100，新规则须为 100。
 // 流式期间不得出现离谱读数；定格的最终值则是 TTFT 后全程平均——冷启动无闸门不夹紧，
 // 肥 chunk 的 token 真实到达，均值如实包含它们（预期语义，非污染）：
-// (24×5 + 2×500 − 首 arrival 5) / 1.16s ≈ 961。
+// (24×5 + 2×500 − 首 arrival 5) / 1.15s ≈ 970 — 分母是"首个内容 → 最后一个内容增长"，
+// 不含 message_end 前的 10ms 落库间隔（见「解码终点」回归项）。
 {
 	const steps: Array<[number, number]> = [];
 	let acc = 0;
@@ -115,8 +116,8 @@ const clean = (n: number) => Array.from({ length: n }, (_, i) => [50, (i + 1) * 
 		`early adjacent fat chunks stay near 100 while streaming (peak ${streamPeak(shown)})`,
 	);
 	expect(
-		Math.abs(final(shown)! - (24 * 5 + 2 * 500 - 5) / 1.16) < 2,
-		`final freezes to the post-TTFT average (${final(shown)} ≈ ${((24 * 5 + 2 * 500 - 5) / 1.16).toFixed(0)})`,
+		Math.abs(final(shown)! - (24 * 5 + 2 * 500 - 5) / 1.15) < 2,
+		`final freezes to the post-TTFT average (${final(shown)} ≈ ${((24 * 5 + 2 * 500 - 5) / 1.15).toFixed(0)})`,
 	);
 }
 
@@ -151,7 +152,7 @@ const clean = (n: number) => Array.from({ length: n }, (_, i) => [50, (i + 1) * 
 	}
 	const spiked = await stream(createInstance(true, key), steps);
 	expect(peak(spiked)! <= 150, `trained gate suppresses majority pollution (peak ${peak(spiked)})`);
-	// 平均值 (2115/1.16 ≈ 1823) 超出闸门上界 (~280)：定格值回退为流式估计，
+	// 平均值 (2115/1.15 ≈ 1839) 超出闸门上界 (~280)：定格值回退为流式估计，
 	// 而不是把上界本身当作速度显示。
 	expect(
 		Math.abs(final(spiked)! - 100) < 2,
@@ -210,9 +211,9 @@ const clean = (n: number) => Array.from({ length: n }, (_, i) => [50, (i + 1) * 
 		streamPeak(shown)! <= 150,
 		`cold start survives 3/8 early pollution while streaming (peak ${streamPeak(shown)})`,
 	);
-	// 定格值 = 冷启动下如实显示的全程平均：(24×5 + 3×500 − 5)/1.16 ≈ 1392。
+	// 定格值 = 冷启动下如实显示的全程平均：(24×5 + 3×500 − 5)/1.15 ≈ 1404。
 	expect(
-		Math.abs(final(shown)! - (24 * 5 + 3 * 500 - 5) / 1.16) < 2,
+		Math.abs(final(shown)! - (24 * 5 + 3 * 500 - 5) / 1.15) < 2,
 		`final freezes to the honest post-TTFT average (${final(shown)})`,
 	);
 }
@@ -421,7 +422,7 @@ for (const gapMs of [2, 5, 10]) {
 // ── 最终速度语义：尾部减速时定格全程平均，而非尾值 ──────────────────────
 // 本优化的核心回归。长响应尾部减速（最后 8 个周期降到 20 tok/s）时，流式估计器
 // 会停在 ~60（尾段慢周期占满半个窗口），旧实现把这个尾值定格；新实现定格为
-// TTFT 后全程平均：(16×5 + 8×1 − 5)/1.16 ≈ 71.6 —— 与“这个响应到底多快”一致。
+// TTFT 后全程平均：(16×5 + 8×1 − 5)/1.15 ≈ 72.2 —— 与“这个响应到底多快”一致。
 {
 	const key = { provider: "final", id: "tail-stall" };
 	// 预训练闸门：均值 71.6 远低于上界，走“直接显示平均值”的主路径
@@ -434,8 +435,8 @@ for (const gapMs of [2, 5, 10]) {
 	}
 	const shown = await stream(createInstance(true, key), steps);
 	expect(
-		Math.abs(final(shown)! - (16 * 5 + 8 * 1 - 5) / 1.16) < 2,
-		`a decelerating tail freezes to the whole-response average, not the tail rate (${final(shown)} ≈ ${((16 * 5 + 8 * 1 - 5) / 1.16).toFixed(1)})`,
+		Math.abs(final(shown)! - (16 * 5 + 8 * 1 - 5) / 1.15) < 2,
+		`a decelerating tail freezes to the whole-response average, not the tail rate (${final(shown)} ≈ ${((16 * 5 + 8 * 1 - 5) / 1.15).toFixed(1)})`,
 	);
 }
 
@@ -484,6 +485,69 @@ for (const gapMs of [2, 5, 10]) {
 		meanDrift <= 0.3,
 		`and never drifts far from the true rate (mean worst ${(meanDrift * 100).toFixed(0)}%)`,
 	);
+}
+
+// ── 中文估算：[regression] 非 ASCII 字符必须按 WIDE_CHAR_WEIGHT 计数 ─────────
+// 旧实现 chars/4 把中文速度低估 ~2.8 倍（实测纯中文 1.43 字/token，英文 ~4），
+// 而且英文语料上的回归测试完全看不见这个偏差——本项是唯一的判别依据。
+// 同样字符数、同样节奏：中文流的定格速度必须约为英文流的 2.8 倍。
+{
+	const textMsg = (text: string) => ({
+		role: "assistant",
+		content: [{ type: "text", text }],
+		usage: { output: 0 },
+	});
+	const streamText = async (
+		inst: ReturnType<typeof createInstance>,
+		chars: (i: number) => string,
+	) => {
+		await inst.fire("session_start", {});
+		await inst.fire("before_provider_request");
+		await inst.fire("message_start", { message: textMsg("") });
+		for (let i = 1; i <= 20; i++) {
+			advance(50);
+			await inst.fire("message_update", { message: textMsg(chars(i)) });
+		}
+		advance(10);
+		await inst.fire("message_end", { message: textMsg(chars(20)) });
+		await inst.fire("session_shutdown", {});
+		await inst.fire("agent_end", {});
+		return inst.shown;
+	};
+
+	// 20 ASCII 字符/步 ÷ 4 = 5 tok/步 → 100 tok/s
+	const ascii = final(await streamText(createInstance(true, { provider: "cjk", id: "ascii" }), (i) => "x".repeat(20 * i)))!;
+	// 20 汉字/步 × 2.8 ÷ 4 = 14 tok/步 → 280 tok/s
+	const cjk = final(await streamText(createInstance(true, { provider: "cjk", id: "han" }), (i) => "中".repeat(20 * i)))!;
+	expect(Math.abs(ascii - 100) < 3, `ascii stream reads 100 (${ascii.toFixed(1)})`);
+	expect(Math.abs(cjk - 280) < 10, `cjk stream reads 280, not 100 (${cjk.toFixed(1)})`);
+}
+
+// ── 解码终点：[regression] usage-only 的尾部到达不得拉长解码窗口 ────────────
+// pi 在 thinking_end / text_end 会推一条内容不变、只带 usage 的 message_update；
+// 网关侧 usage 还常比最后一个内容 chunk 晚到（实测 96ms，最多 546ms）。
+// 旧实现以 message_end 为终点：120 tok 的响应会读成 91 tok/s 而不是 120。
+{
+	const inst = createInstance(true, { provider: "tail", id: "usage-only" });
+	await inst.fire("session_start", {});
+	await inst.fire("before_provider_request");
+	await inst.fire("message_start", { message: msg(0) });
+	let acc = 0;
+	for (let i = 0; i < 20; i++) {
+		acc += 6;
+		advance(50);
+		await inst.fire("message_update", { message: msg(acc) });
+	}
+	// usage-only：内容不变，只带 usage，且比最后一个内容 chunk 晚 300ms
+	advance(300);
+	await inst.fire("message_update", { message: { ...msg(acc), usage: { output: acc } } });
+	advance(10);
+	await inst.fire("message_end", { message: { ...msg(acc), usage: { output: acc } } });
+	await inst.fire("session_shutdown", {});
+	await inst.fire("agent_end", {});
+	const frozen = final(inst.shown)!;
+	// (120 − 6) tok 分布在首 token 之后的 950ms 内 → ~120 tok/s；含尾巴则是 91。
+	expect(Math.abs(frozen - 120) < 4, `usage-only tail does not stretch the window (${frozen.toFixed(1)} ≈ 120)`);
 }
 
 performance.now = realNow;
