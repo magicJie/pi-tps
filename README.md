@@ -9,13 +9,13 @@
 
 ## 使用
 
-从本仓库安装：
+从本仓库安装（推荐）：
 
 ```bash
 pi install git:github.com/magicJie/pi-tps
 ```
 
-本地开发（改动后 `/reload` 立即生效）：
+本地开发（仓库即插件目录，改动后 `/reload` 立即生效）：
 
 ```bash
 git clone https://github.com/magicJie/pi-tps ~/.pi/agent/extensions/pi-tps
@@ -26,18 +26,6 @@ git clone https://github.com/magicJie/pi-tps ~/.pi/agent/extensions/pi-tps
 ```bash
 pi -e ~/path/to/pi-tps/token-speed.ts
 ```
-
-本地开发长期加载：把下面路径加入 `~/.pi/agent/settings.json` 的 `extensions` 数组：
-
-```json
-{
-  "extensions": [
-    "/home/focksor/workSpace/pi-token-speed/token-speed.ts"
-  ]
-}
-```
-
-修改配置后重新启动 pi；已经运行的 pi 可以使用 `/reload` 重新加载扩展。
 
 ## 显示口径
 

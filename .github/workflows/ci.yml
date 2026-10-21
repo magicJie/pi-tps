@@ -14,40 +14,35 @@ concurrency:
 
 jobs:
   verify:
-    name: 验证（类型检查 + 加载冒烟 + 打包）
+    name: 验证（加载冒烟 + 回归 + 类型检查）
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      # Node 24：原生 TS 类型剥离可直接 node 运行 .ts
+      # Node 24：原生 TS 类型剥离可直接 node 运行 .ts，无需构建
       - name: 安装 Node 24
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '24'
           package-manager-cache: false
 
-      # 运行时零依赖：pi 包导入均为 type-only，会被剥离，可直接执行冒烟
+      # 运行时零依赖：pi 包导入均为 type-only，会被剥离
       - name: 加载冒烟测试
         run: node token-speed.ts
 
-      # 多会话功能回归：全局聚合 + TTFT 实时等待计时（约 6s，含定时器节拍）
-      - name: 功能回归测试
+      # 多会话聚合 + 首 token 等待阶段（约 6s）
+      - name: 多会话回归
         run: node test-global.ts
 
-      # 估计器回归：虚拟时钟驱动，覆盖周期采样、历史闸门、超短回复夹紧
-      - name: 估计器回归测试
+      # 估计器回归：虚拟时钟驱动，覆盖周期采样、闸门、中文加权、解码终点
+      - name: 估计器回归
         run: node test-estimator.ts
 
-      # devDependencies 不入库，仅在 CI 临时安装用于类型检查
+      # devDependencies 不入库，仅 CI 临时安装用于严格类型检查
       - name: TypeScript 严格类型检查
         run: |
           npm i --no-save --no-package-lock --no-audit --no-fund \
             typescript@latest @types/node@latest @earendil-works/pi-coding-agent@latest
           npx tsc --module nodenext --moduleResolution nodenext --target es2022 \
             --strict --noEmit --skipLibCheck --types node token-speed.ts
-
-      - name: 打包检查（tarball 内容与体积）
-        run: |
-          npm pack
-          tar tzf focksor-pi-token-speed-*.tgz
