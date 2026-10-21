@@ -1,6 +1,6 @@
 {
   "name": "pi-tps",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "pi extension: assistant output token speed + TTFT in the footer, CJK-aware, aggregated across in-process subagents",
   "type": "module",
   "license": "MIT",

@@ -17,11 +17,14 @@ const { default: extensionFactory } = await import("./token-speed.ts");
 /** 每个实例用一组独立的 handler 表模拟一个 pi 会话。 */
 function createInstance(hasUI = true, model?: { provider: string; id: string }) {
 	const handlers = new Map<string, Array<(e: unknown, c: unknown) => void>>();
+	const commands = new Map<string, unknown>();
 	const pi = {
 		on: (t: string, h: (e: unknown, c: unknown) => void) => {
 			if (!handlers.has(t)) handlers.set(t, []);
 			handlers.get(t)!.push(h);
 		},
+		// /tps 命令只在有真实 UI 的会话里用得到；stub 里登记但不驱动
+		registerCommand: (name: string, opts: unknown) => commands.set(name, opts),
 	};
 	extensionFactory(pi as never);
 	const shown: Array<number | undefined> = [];

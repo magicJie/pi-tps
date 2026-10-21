@@ -29,12 +29,15 @@ globalThis[Symbol.for("pi-token-speed.shared-store")] = {
 
 function createInstance({ name, hasUI }) {
 	const handlers = new Map();
+	const commands = new Map();
 	const statuses = [];
 	const pi = {
 		on: (type, handler) => {
 			if (!handlers.has(type)) handlers.set(type, []);
 			handlers.get(type).push(handler);
 		},
+		// /tps 命令只在有真实 UI 的会话里用得到；stub 里登记但不驱动
+		registerCommand: (name: string, opts: unknown) => commands.set(name, opts),
 	};
 	if (name !== undefined) pi.getSessionName = () => name;
 
@@ -113,7 +116,7 @@ await subA.fire("message_start", { message: assistantMessage("") });
 expect(
 	main,
 	main.last() === "⚡ 3 sub",
-	`streamer in TTFT phase keeps "⚡ 3 sub" without a "—" ("${main.last()}")`,
+	`streamer in the pre-first-token phase keeps "⚡ 3 sub" without a "—" ("${main.last()}")`,
 );
 // The estimator is a bucketed median: it reports nothing until it has at least
 // two buckets of history, so feed it a realistic short stream.
@@ -143,28 +146,28 @@ await streamDeltas(subB, { steps: 6, charsPerStep: 120 });
 await sleep(10);
 expect(main, /⚡ 3 sub · [\d.]+ tok\/s/.test(main.last()), `two streamers aggregate ("${main.last()}")`);
 
-// main streams too: both segments combine. The TTFT wait shows a LIVE timer:
-// it starts at before_provider_request (the same anchor the final TTFT is
-// measured from) and ticks with no pi events in between.
+// main streams too: both segments combine. The wait phase (request sent, no
+// token yet) keeps the placeholder and must NOT churn renders — the footer shows
+// one number only, so there is no latency to tick.
 await main.fire("before_provider_request");
 expect(
 	main,
-	/^⚡ \.\.\. tok\/s · TTFT \S+… · 3 sub/.test(main.last() ?? ""),
-	`wait timer starts at before_provider_request ("${main.last()}")`,
+	/^⚡ \.\.\. tok\/s · 3 sub/.test(main.last() ?? ""),
+	`wait phase shows the placeholder, no TTFT in the footer ("${main.last()}")`,
 );
 const ticksBefore = main.statusCount();
 await sleep(350);
 const ticksAfter = main.statusCount();
 expect(
 	main,
-	ticksAfter - ticksBefore >= 2 && /^⚡ \.\.\. tok\/s · TTFT \S+… · 3 sub/.test(main.last() ?? ""),
-	`TTFT wait timer ticks with no events (${ticksAfter - ticksBefore} renders in 350ms, "${main.last()}")`,
+	ticksAfter === ticksBefore,
+	`no render churn while waiting for the first token (${ticksAfter - ticksBefore} renders in 350ms)`,
 );
 await main.fire("message_start", { message: assistantMessage("") });
 expect(
 	main,
-	/^⚡ \.\.\. tok\/s · TTFT \S+… · 3 sub/.test(main.last() ?? ""),
-	`main wait timer + sub segment ("${main.last()}")`,
+	/^⚡ \.\.\. tok\/s · 3 sub/.test(main.last() ?? ""),
+	`waiting still shows speed placeholder + sub segment ("${main.last()}")`,
 );
 
 // Regression (throttle starvation): a sub flush render lands right before a
@@ -174,18 +177,18 @@ await streamDeltas(subB, { steps: 3, charsPerStep: 120, from: 720 });
 await main.fire("message_update", { message: assistantMessage("m".repeat(50)) });
 expect(
 	main,
-	/⚡ [\d.]+ tok\/s · TTFT \S+ · 3 sub/.test(main.last()),
+	/⚡ [\d.]+ tok\/s · 3 sub/.test(main.last()),
 	`main delta renders despite concurrent sub flush ("${main.last()}")`,
 );
-// The live timer must stop at the first token: while idle, no further renders.
+// Nothing ticks once the first token lands: the footer only changes on events.
 const idleBefore = main.statusCount();
 await sleep(350);
-expect(main, main.statusCount() === idleBefore, "TTFT timer stops after the first token");
+expect(main, main.statusCount() === idleBefore, "idle after the first token renders nothing");
 await streamDeltas(main, { steps: 3, stepMs: 150, charsPerStep: 300, from: 940 });
 await sleep(10);
 expect(
 	main,
-	/ [\d.]+ tok\/s · TTFT \S+ · 3 sub · [\d.]+ tok\/s/.test(main.last()),
+	/ [\d.]+ tok\/s · 3 sub · [\d.]+ tok\/s/.test(main.last()),
 	`main + sub aggregate combined ("${main.last()}")`,
 );
 await main.fire("message_end", { message: assistantMessage("m".repeat(200)) });
@@ -198,15 +201,15 @@ await main.fire("before_provider_request");
 await sleep(10);
 expect(
 	main,
-	/^⚡ [\d.]+ tok\/s · TTFT \S+… · 3 sub/.test(main.last() ?? ""),
+	/^⚡ [\d.]+ tok\/s · 3 sub/.test(main.last() ?? ""),
 	`second wait keeps the last shown speed, no "..." ("${main.last()}")`,
 );
 await main.fire("message_start", { message: assistantMessage("") });
 await sleep(10);
 expect(
 	main,
-	/^⚡ [\d.]+ tok\/s · TTFT \S+… · 3 sub/.test(main.last() ?? ""),
-	`pre-first-token still shows the last speed with a live TTFT ("${main.last()}")`,
+	/^⚡ [\d.]+ tok\/s · 3 sub/.test(main.last() ?? ""),
+	`pre-first-token still shows the last speed, no "..." ("${main.last()}")`,
 );
 // [estimator] the streaming speed is a bucketed median, so it needs a couple of
 // samples before it reports anything; until then the previous response's speed
@@ -214,7 +217,7 @@ expect(
 await main.fire("message_update", { message: assistantMessage("m".repeat(40)) });
 expect(
 	main,
-	/^⚡ [\d.]+ tok\/s · TTFT \S+ · 3 sub/.test(main.last() ?? "") && !main.last()?.includes("…"),
+	/^⚡ [\d.]+ tok\/s · 3 sub/.test(main.last() ?? "") && !main.last()?.includes("…"),
 	`first delta keeps the previous speed until the estimator has history ("${main.last()}")`,
 );
 // Three deltas ~150ms apart at a steady rate: the estimate must land on the true
@@ -239,7 +242,7 @@ await sleep(10);
 expect(main, main.last()?.includes("2 sub"), `agent_end drops the count to "2 sub" ("${main.last()}")`);
 expect(
 	main,
-	/⚡ [\d.]+ tok\/s · TTFT \S+ · 2 sub/.test(main.last()),
+	/⚡ [\d.]+ tok\/s · 2 sub/.test(main.last()),
 	"main speed stays visible alongside the aggregate after it has streamed once",
 );
 
@@ -247,7 +250,7 @@ await subB.fire("agent_end", {});
 await sleep(10);
 expect(
 	main,
-	main.last()?.includes("sub gp-gamma") && main.last()?.includes("TTFT"),
+	main.last()?.includes("sub gp-gamma") && /⚡ [\d.]+ tok\/s · sub/.test(main.last() ?? ""),
 	`single remaining agent shows its name, main speed still first ("${main.last()}")`,
 );
 
@@ -256,7 +259,7 @@ await streamDeltas(subC, { steps: 6, charsPerStep: 100 });
 await sleep(10);
 expect(
 	main,
-	/⚡ [\d.]+ tok\/s · TTFT \S+ · sub gp-gamma · [\d.]+ tok\/s/.test(main.last()),
+	/⚡ [\d.]+ tok\/s · sub gp-gamma · [\d.]+ tok\/s/.test(main.last()),
 	`main speed + single agent name + speed ("${main.last()}")`,
 );
 
@@ -264,7 +267,7 @@ await subC.fire("agent_end", {});
 await sleep(150);
 expect(
 	main,
-	!main.last()?.includes("sub") && /⚡ [\d.]+ tok\/s · TTFT \S+/.test(main.last()),
+	!main.last()?.includes("sub") && /⚡ [\d.]+ tok\/s$/.test(main.last()),
 	`all done: aggregate gone, main final speed persists ("${main.last()}")`,
 );
 
@@ -278,7 +281,7 @@ await sleep(10);
 const afterAbort = main.last() ?? "";
 expect(
 	main,
-	/⚡ [\d.]+ tok\/s · TTFT \S+$/.test(afterAbort) && !afterAbort.includes("…"),
+	/⚡ [\d.]+ tok\/s$/.test(afterAbort) && !afterAbort.includes("…"),
 	`aborted wait falls back to the final speed ("${afterAbort}")`,
 );
 const abortIdleBefore = main.statusCount();

@@ -512,6 +512,11 @@ function pushSample(samples: SpeedSample[], sample: SpeedSample): void {
 	}
 }
 
+function formatTokensCompact(tokens: number): string {
+	const v = Math.round(tokens);
+	return v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${v}`;
+}
+
 function formatSpeed(tokens: number): string {
 	if (!Number.isFinite(tokens) || tokens <= 0) {
 		return "—";
@@ -600,6 +605,8 @@ export default function (pi: ExtensionAPI) {
 	let lastReportAt = -Infinity;
 	let pendingRequestSentAt: number | undefined;
 	let latestCtx: ExtensionContext | undefined;
+	/** Last finalized response, for `/tps` — the detail the footer no longer shows. */
+	let lastResult: { speed: number; tokens: number; decodeMs: number; ttft?: number; at: number } | undefined;
 
 	// Compose this session's segment with the live subagent aggregate and push it
 	// to the footer. Only the instance whose session owns a real UI renders — for
@@ -634,28 +641,12 @@ export default function (pi: ExtensionAPI) {
 			const subSegment = formatSubagents(subs, now);
 
 			let status: string | undefined;
-			// The main session's own speed is always displayed once measured: live
-			// while streaming, otherwise the last finalized speed — subagent activity
-			// appends to it, never replaces it.
+			// Footer stays one number, DSH-style: `⚡ 241 tok/s`. Latency, token count
+			// and decode time live behind `/tps` instead of stretching the footer —
+			// a second number on that line is what made the old line unreadable.
 			let mainSegment: string | undefined;
-			if (live && awaitingFirstToken) {
-				// Live TTFT wait (message started, first token pending): tick the time
-				// since the request was sent — the same anchor the final TTFT is
-				// measured from — so the running number converges exactly to the value
-				// frozen at the first token.
-				const anchor = activeResponse?.requestSentAt ?? pendingRequestSentAt;
-				mainSegment =
-					anchor !== undefined
-						? `⚡ ${speedTextFor()} tok/s · TTFT ${formatLatency(Math.max(now - anchor, 0))}…`
-						: `⚡ ${speedTextFor()} tok/s · TTFT ...`;
-			} else if (live) {
-				// TTFT is final the moment the first token arrives — show it even while
-				// the estimator still lacks history, where only the speed is withheld.
-				mainSegment = `⚡ ${speedTextFor(live.speed)} tok/s · TTFT ${formatLatency(live.ttft ?? Number.NaN)}`;
-			} else if (pendingRequestSentAt !== undefined) {
-				// Live TTFT wait (request in flight, message not started yet): the
-				// network/provider latency before message_start is part of the TTFT.
-				mainSegment = `⚡ ${speedTextFor()} tok/s · TTFT ${formatLatency(Math.max(now - pendingRequestSentAt, 0))}…`;
+			if (live || pendingRequestSentAt !== undefined) {
+				mainSegment = `⚡ ${speedTextFor(live?.speed)} tok/s`;
 			} else {
 				mainSegment = lastFinalMainStatus;
 			}
@@ -671,24 +662,10 @@ export default function (pi: ExtensionAPI) {
 
 	const onStoreChange = () => render(true);
 
-	// Live TTFT wait timer. No pi event fires between the provider request and
-	// the first streamed token, so a timer is the only way to keep the wait
-	// visible: every tick is a forced render of the elapsed time at ~10Hz.
-	let waitTicker: ReturnType<typeof setInterval> | undefined;
-	const stopWaitTicker = () => {
-		if (waitTicker !== undefined) {
-			clearInterval(waitTicker);
-			waitTicker = undefined;
-		}
-	};
-	const startWaitTicker = () => {
-		// Only the UI-owning instance renders; subagent instances must not even
-		// start one — an interval would achieve nothing and keep the process alive.
-		if (latestCtx?.hasUI !== true || waitTicker !== undefined) return;
-		waitTicker = setInterval(() => render(true), LIVE_REFRESH_INTERVAL_MS);
-		// Defense in depth: a leaked interval must never hold the process open.
-		waitTicker.unref?.();
-	};
+	// The footer no longer shows a live TTFT, so there is nothing to tick between
+	// the request and the first token; renders happen on phase changes only.
+	const stopWaitTicker = () => {};
+	const startWaitTicker = () => {};
 
 	/** Merge a patch into this session's store entry and refresh its keepalive. */
 	const touch = (patch: Partial<Omit<SessionEntry, "updatedAt">>) => {
@@ -930,7 +907,14 @@ export default function (pi: ExtensionAPI) {
 				? activeResponse.firstTokenAt - activeResponse.requestSentAt
 				: undefined;
 		if (speed > 0) lastShownSpeed = speed;
-		lastFinalMainStatus = `⚡ ${formatSpeed(speed)} tok/s · TTFT ${formatLatency(ttft ?? Number.NaN)}`;
+		lastFinalMainStatus = `⚡ ${formatSpeed(speed)} tok/s`;
+		lastResult = {
+			speed,
+			tokens: outputTokens,
+			decodeMs: streamedMs,
+			ttft,
+			at: Date.now(),
+		};
 
 		// Feed the plausibility history before the response state is dropped.
 		const historyKey = rateKey(ctx);
@@ -972,6 +956,24 @@ export default function (pi: ExtensionAPI) {
 		// though its session lingers for a while before pi-subagents disposes it.
 		store.sessions.delete(instanceId);
 		scheduleFlush(store);
+	});
+
+	// Footer 只显示一个数；明细走这里（相当于 DSH 的统计弹窗）。
+	pi.registerCommand("tps", {
+		description: "最近一次响应的 tok/s、token 数、解码时长与 TTFT",
+		handler: async (_args, ctx) => {
+			if (lastResult === undefined) {
+				ctx.ui.notify("tps: 还没有完成的响应", "info");
+				return;
+			}
+			const { speed, tokens, decodeMs, ttft } = lastResult;
+			const parts = [
+				`⚡ ${formatSpeed(speed)} tok/s`,
+				`${formatTokensCompact(tokens)} tok / ${(decodeMs / 1000).toFixed(2)}s`,
+			];
+			if (ttft !== undefined) parts.push(`TTFT ${formatLatency(ttft)}`);
+			ctx.ui.notify(parts.join(" · "), "info");
+		},
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
