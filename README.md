@@ -1,21 +1,30 @@
-# @focksor/pi-token-speed
+# pi-tps
 
 在 pi 的默认 footer 中显示 assistant 输出速度；运行 subagent（如 [pi-subagents](https://github.com/tintinweb/pi-subagents)）时，footer 会实时显示所有正在流式的 subagent 的聚合速度。
 
-![npm](https://img.shields.io/npm/v/@focksor/pi-token-speed)
+> **本仓库是自维护分支**，派生自 [focksor/pi-token-speed](https://github.com/focksor/pi-token-speed) v1.7.0（MIT）。
+> 上游自 2026-09 后无新提交，本仓库继续维护，并在 1.8.0 里加入两处口径修正：
+> 非 ASCII（中文）字符按 2.8 倍加权估算、定格速度的解码终点改为「最后一个内容增长」。
+> 上游的 npm 包 `@focksor/pi-token-speed` 不再更新。
 
 ## 使用
 
-从 npm 安装（推荐）：
+从本仓库安装：
 
 ```bash
-pi install npm:@focksor/pi-token-speed
+pi install git:github.com/magicJie/pi-tps
+```
+
+本地开发（改动后 `/reload` 立即生效）：
+
+```bash
+git clone https://github.com/magicJie/pi-tps ~/.pi/agent/extensions/pi-tps
 ```
 
 临时从源码加载：
 
 ```bash
-pi -e ~/workSpace/pi-token-speed/token-speed.ts
+pi -e ~/path/to/pi-tps/token-speed.ts
 ```
 
 本地开发长期加载：把下面路径加入 `~/.pi/agent/settings.json` 的 `extensions` 数组：

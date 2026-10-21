@@ -1,18 +1,18 @@
 {
-  "name": "@focksor/pi-token-speed",
-  "version": "1.7.0",
-  "description": "pi extension: show assistant output token speed and TTFT in the footer, aggregated across in-process subagents",
+  "name": "pi-tps",
+  "version": "1.8.0",
+  "description": "pi extension: assistant output token speed + TTFT in the footer, CJK-aware, aggregated across in-process subagents",
   "type": "module",
   "license": "MIT",
   "author": "focksor <focksor@outlook.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/focksor/pi-token-speed.git"
+    "url": "git+https://github.com/magicJie/pi-tps.git"
   },
   "bugs": {
-    "url": "https://github.com/focksor/pi-token-speed/issues"
+    "url": "https://github.com/magicJie/pi-tps/issues"
   },
-  "homepage": "https://github.com/focksor/pi-token-speed#readme",
+  "homepage": "https://github.com/magicJie/pi-tps",
   "keywords": [
     "pi-package",
     "pi",
@@ -38,5 +38,10 @@
   },
   "engines": {
     "node": ">=22.19.0"
-  }
+  },
+  "contributors": [
+    {
+      "name": "magicJie"
+    }
+  ]
 }
