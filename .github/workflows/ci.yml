@@ -1,4 +1,4 @@
-name: CI
+name: CI  # 工作流（自维护）
 
 on:
   push:
